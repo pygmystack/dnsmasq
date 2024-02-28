@@ -138,6 +138,10 @@ jobs:
         run: | 
           curl http://docker.amazee.io/stats | grep 'class=px' | grep 'mailhog.docker.amazee.io';
           curl http://docker.amazee.io/stats | grep 'HAProxy version';
+      -
+        name: dnsmasq version
+        run: |
+          docker exec amazeeio-dnsmasq sh -c 'dnsmasq -v' | grep 'Dnsmasq version'
       - 
         name: Test the amazeeio-network for expected results
         run: |
