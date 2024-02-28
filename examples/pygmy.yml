@@ -1,0 +1,3 @@
+services:
+  amazeeio-dnsmasq:
+    image: ghcr.io/pygmystack/dnsmasq:main
