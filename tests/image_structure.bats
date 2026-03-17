@@ -15,10 +15,10 @@ IMAGE="${IMAGE_NAME:-pygmystack/dnsmasq:test}"
     [ -n "$output" ]
 }
 
-@test "dnsmasq version is 2.85.x" {
+@test "dnsmasq version is 2.91.x" {
     run docker run --rm --entrypoint sh "${IMAGE}" -c 'dnsmasq --version 2>&1'
     [ "$status" -eq 0 ]
-    [[ "$output" =~ "2.85" ]]
+    [[ "$output" =~ "2.91" ]]
 }
 
 @test "dnsmasq is built with DNSSEC support" {
