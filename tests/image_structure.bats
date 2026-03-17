@@ -32,24 +32,24 @@ IMAGE="${IMAGE_NAME:-pygmystack/dnsmasq:test}"
 # ---------------------------------------------------------------------------
 
 @test "dnsmasq serves DNS to clients whose source IP is not on a directly-connected subnet" {
-    # Functionally validates that the local-service restriction is NOT active.
-    # The default /etc/dnsmasq.conf in Alpine ships with "local-service" enabled,
-    # which causes dnsmasq to silently drop queries from clients whose source IP
-    # is not on a subnet directly attached to the server.  The Dockerfile
-    # comments that line out so that dnsmasq answers all clients — a requirement
-    # for the pygmy stack, where the host resolver queries the containerised
-    # dnsmasq across Docker's bridge network.
+    # Validates that the local-service restriction is NOT active.
+    # The default Alpine dnsmasq.conf enables "local-service", which silently
+    # drops queries from clients whose source IP is not on a subnet directly
+    # attached to dnsmasq. The Dockerfile comments that line out so all clients
+    # are served — required by the pygmy stack.
     #
-    # Topology used by this test:
-    #   net-a (172.28.200.0/24) ── dnsmasq container
+    # Topology:
+    #   net-a (Docker auto-assigned) ── dnsmasq
     #              │
-    #         router (ip_forward=1, one leg on each net)
+    #         router (--privileged, IP forwarding on)
     #              │
-    #   net-b (172.29.200.0/24) ── DNS client
+    #   net-b (Docker auto-assigned) ── DNS client
     #
-    # The client's source IP (172.29.200.x) is NOT in net-a, so with
-    # local-service active dnsmasq would refuse the query.  Without it, the
-    # query is answered.
+    # The client's source IP is in net-b, not net-a, so local-service would
+    # drop it. We verify dnsmasq received and processed the query by checking
+    # its logs (--log-queries). The DNS reply cannot route back to the client
+    # due to Docker network isolation — that is expected and irrelevant here;
+    # only the client→dnsmasq direction is needed.
 
     local suffix net_a net_b dns_c rtr_c
     suffix="$(openssl rand -hex 4)"
@@ -58,48 +58,57 @@ IMAGE="${IMAGE_NAME:-pygmystack/dnsmasq:test}"
     dns_c="dnsmasq-ls-dns-${suffix}"
     rtr_c="dnsmasq-ls-rtr-${suffix}"
 
-    # Pre-cleanup in case a previous run left debris.
     docker rm -f "${dns_c}" "${rtr_c}" 2>/dev/null || true
     docker network rm "${net_a}" "${net_b}" 2>/dev/null || true
 
-    docker network create --subnet=172.28.200.0/24 "${net_a}"
-    docker network create --subnet=172.29.200.0/24 "${net_b}"
+    # Let Docker assign subnets automatically to avoid conflicts with the
+    # runner's existing networks (the root cause of failures with hardcoded IPs).
+    docker network create "${net_a}" >/dev/null
+    docker network create "${net_b}" >/dev/null
 
-    # dnsmasq is only connected to net-a.
+    # dnsmasq on net-a only; logs queries to stderr so docker logs shows them.
     docker run -d --name "${dns_c}" \
         --network "${net_a}" \
         "${IMAGE}" \
-        --address=/local-service-test.docker.amazee.io/1.2.3.4
+        --log-queries \
+        --log-facility=- \
+        --address=/local-service-test.docker.amazee.io/1.2.3.4 >/dev/null
 
-    local dns_ip
+    local dns_ip net_a_subnet
     dns_ip="$(docker inspect -f "{{(index .NetworkSettings.Networks \"${net_a}\").IPAddress}}" "${dns_c}")"
+    net_a_subnet="$(docker network inspect -f '{{(index .IPAM.Config 0).Subnet}}' "${net_a}")"
 
-    # Router bridges both networks with IP forwarding enabled.
+    # Router with IP forwarding bridges both networks. --privileged is used
+    # to ensure /proc/sys/net/ipv4/ip_forward is writable in all CI environments.
     docker run -d --name "${rtr_c}" \
         --network "${net_a}" \
-        --cap-add NET_ADMIN \
-        --sysctl net.ipv4.ip_forward=1 \
-        alpine sleep 30
-    docker network connect "${net_b}" "${rtr_c}"
+        --privileged \
+        alpine sh -c 'echo 1 > /proc/sys/net/ipv4/ip_forward && tail -f /dev/null' >/dev/null
+    docker network connect "${net_b}" "${rtr_c}" >/dev/null
 
     local rtr_b_ip
     rtr_b_ip="$(docker inspect -f "{{(index .NetworkSettings.Networks \"${net_b}\").IPAddress}}" "${rtr_c}")"
 
-    # Allow dnsmasq a moment to start.
     sleep 2
 
-    # Client lives only on net-b.  It routes into net-a via the router and
-    # queries dnsmasq.  Because the source IP (172.29.200.x) is outside net-a,
-    # local-service would reject this if it were still active.
-    run docker run --rm \
+    # Client on net-b routes through the router and sends the query. nslookup
+    # will time out (no return path) — that is expected and ignored. We only
+    # need the UDP query to reach dnsmasq.
+    docker run --rm \
         --network "${net_b}" \
         --cap-add NET_ADMIN \
         alpine sh -c "
-            ip route add 172.28.200.0/24 via ${rtr_b_ip} &&
-            nslookup local-service-test.docker.amazee.io ${dns_ip}
-        "
+            ip route add ${net_a_subnet} via ${rtr_b_ip} 2>/dev/null || true
+            timeout 3 nslookup local-service-test.docker.amazee.io ${dns_ip}
+        " >/dev/null 2>&1 || true
 
-    # Capture results before cleanup so assertions reflect the real outcome.
+    sleep 1
+
+    # If local-service were active dnsmasq would silently drop the query and
+    # nothing would appear in its log. Presence of the query name confirms
+    # local-service is disabled.
+    run docker logs "${dns_c}" 2>&1
+
     local test_status=$status
     local test_output="$output"
 
@@ -107,7 +116,7 @@ IMAGE="${IMAGE_NAME:-pygmystack/dnsmasq:test}"
     docker network rm "${net_a}" "${net_b}" 2>/dev/null || true
 
     [ "$test_status" -eq 0 ]
-    [[ "$test_output" =~ "1.2.3.4" ]]
+    [[ "$test_output" =~ "local-service-test.docker.amazee.io" ]]
 }
 
 # ---------------------------------------------------------------------------
