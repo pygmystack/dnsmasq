@@ -15,10 +15,13 @@ IMAGE="${IMAGE_NAME:-pygmystack/dnsmasq:test}"
     [ -n "$output" ]
 }
 
-@test "dnsmasq version is 2.91.x" {
+@test "dnsmasq version matches Dockerfile" {
+    local expected_version
+    expected_version="$(grep -oE 'dnsmasq-dnssec=~[0-9]+\.[0-9]+' "${BATS_TEST_DIRNAME}/../Dockerfile" | grep -oE '[0-9]+\.[0-9]+')"
+    [ -n "${expected_version}" ] || { echo "Could not extract dnsmasq version from Dockerfile" >&2; return 1; }
     run docker run --rm --entrypoint sh "${IMAGE}" -c 'dnsmasq --version 2>&1'
     [ "$status" -eq 0 ]
-    [[ "$output" =~ "2.91" ]]
+    [[ "$output" =~ "${expected_version}" ]]
 }
 
 @test "dnsmasq is built with DNSSEC support" {
