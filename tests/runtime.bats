@@ -33,11 +33,17 @@ setup_file() {
     # Remove any leftover container from a previous (failed) run.
     docker rm -f "${DNSMASQ_CONTAINER}" 2>/dev/null || true
 
-    docker run -d \
+    # Start the container and fail fast if docker run does not succeed.
+    local run_output
+    if ! run_output="$(docker run -d \
         --name "${DNSMASQ_CONTAINER}" \
         "${IMAGE}" \
         --address=/docker.amazee.io/127.0.0.1 \
-        --address=/test.example.invalid/192.0.2.42
+        --address=/test.example.invalid/192.0.2.42 2>&1)"; then
+        echo "# Failed to start dnsmasq test container" >&3
+        echo "${run_output}" >&3
+        return 1
+    fi
 
     # Wait for dnsmasq to start accepting DNS queries.
     local max_wait=15
@@ -56,7 +62,9 @@ setup_file() {
 teardown_file() {
     local suffix
     suffix="$(cat "${BATS_SUITE_TMPDIR}/.suffix" 2>/dev/null || true)"
-    docker rm -f "dnsmasq-bats-test-${suffix}" 2>/dev/null || true
+    if [ -n "${suffix}" ]; then
+        docker rm -f "dnsmasq-bats-test-${suffix}" 2>/dev/null || true
+    fi
 }
 
 # ---------------------------------------------------------------------------

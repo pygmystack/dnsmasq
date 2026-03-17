@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # Image structure tests — verify the binary, DNSSEC capability, and image
 # metadata baked into the dnsmasq image.  These tests run ephemeral containers
-# and do not require access to the Docker socket.
+# and require Docker to be available on the host (no long-running containers).
 
 IMAGE="${IMAGE_NAME:-pygmystack/dnsmasq:test}"
 
@@ -78,6 +78,20 @@ IMAGE="${IMAGE_NAME:-pygmystack/dnsmasq:test}"
     dns_ip="$(docker inspect -f "{{(index .NetworkSettings.Networks \"${net_a}\").IPAddress}}" "${dns_c}")"
     net_a_subnet="$(docker network inspect -f '{{(index .IPAM.Config 0).Subnet}}' "${net_a}")"
 
+    if [ -z "${dns_ip}" ]; then
+        echo "dns_ip is empty; docker inspect failed or returned no IP for container '${dns_c}' on network '${net_a}'" >&2
+        docker rm -f "${dns_c}" "${rtr_c}" 2>/dev/null || true
+        docker network rm "${net_a}" "${net_b}" 2>/dev/null || true
+        return 1
+    fi
+
+    if [ -z "${net_a_subnet}" ]; then
+        echo "net_a_subnet is empty; docker network inspect failed or returned no subnet for network '${net_a}'" >&2
+        docker rm -f "${dns_c}" "${rtr_c}" 2>/dev/null || true
+        docker network rm "${net_a}" "${net_b}" 2>/dev/null || true
+        return 1
+    fi
+
     # Router with IP forwarding bridges both networks. --privileged is used
     # to ensure /proc/sys/net/ipv4/ip_forward is writable in all CI environments.
     docker run -d --name "${rtr_c}" \
@@ -89,7 +103,16 @@ IMAGE="${IMAGE_NAME:-pygmystack/dnsmasq:test}"
     local rtr_b_ip
     rtr_b_ip="$(docker inspect -f "{{(index .NetworkSettings.Networks \"${net_b}\").IPAddress}}" "${rtr_c}")"
 
-    sleep 2
+    # Wait until the router container is running before sending traffic.
+    local wait_secs=0
+    until [ "$(docker inspect -f '{{.State.Running}}' "${rtr_c}" 2>/dev/null)" = "true" ]; do
+        sleep 1
+        wait_secs=$((wait_secs + 1))
+        if [ "$wait_secs" -ge 20 ]; then
+            echo "Timed out waiting for router container to start" >&2
+            break
+        fi
+    done
 
     # Client on net-b routes through the router and sends the query. nslookup
     # will time out (no return path) — that is expected and ignored. We only
@@ -102,7 +125,15 @@ IMAGE="${IMAGE_NAME:-pygmystack/dnsmasq:test}"
             timeout 3 nslookup local-service-test.docker.amazee.io ${dns_ip}
         " >/dev/null 2>&1 || true
 
-    sleep 1
+    # Wait (bounded) for dnsmasq to log the query rather than using a fixed sleep.
+    wait_secs=0
+    until docker logs "${dns_c}" 2>&1 | grep -q "local-service-test.docker.amazee.io"; do
+        sleep 1
+        wait_secs=$((wait_secs + 1))
+        if [ "$wait_secs" -ge 10 ]; then
+            break
+        fi
+    done
 
     # If local-service were active dnsmasq would silently drop the query and
     # nothing would appear in its log. Presence of the query name confirms
