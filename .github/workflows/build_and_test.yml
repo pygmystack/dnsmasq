@@ -17,7 +17,7 @@ jobs:
     with:
       image_name: dns
       image_name_legacy: dnsmasq
-      replace_source: ghcr.io/pygmystack/dns:main
+      replace_source: ghcr.io/pygmystack/dnsmasq:main
       oc_authors: the pygmy stack, Simon Kelley (dnsmasq)
       oc_description: dnsmasq DNS proxy, configured for use with the pygmy stack
     secrets: inherit
